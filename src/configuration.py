@@ -17,3 +17,4 @@ BASE_URL = "https://www.winemag.com/?s=&drink_type=wine&country={country}&page={
 DATA_DIR = "data"
 FILE_NAME_URLS = "winemag-urls.txt"
 FILE_NAME_REVIEWS = "winemag-data.csv"
+MAX_RETRIES = 20
