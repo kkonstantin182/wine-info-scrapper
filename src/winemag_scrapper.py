@@ -64,42 +64,47 @@ class Scrapper:
         bs_obj = BeautifulSoup(response.text, 'html.parser')
         return int(bs_obj.find("span", {"class": "results-count"}).text.split("of")[1].strip().replace(",", ""))
     
-
-    @timer
-    def _get_reviews_urls(self):
+    def _get_review_urls_on_page(self, page):
         
-        page = self.first_page
         num_retries = 0
-        
-        with tqdm(total=self.n_pages) as pbar:
-            while page <= self.n_pages:
+        urls = []
 
-                try:
-                    response = requests.get(url=self._init_url.format(**{"country": self.country, "n_page": page}), headers=self._header, timeout=randint(5,7))
-                    response.raise_for_status()
-                except (requests.exceptions.HTTPError, requests.exceptions.RequestException) as e:
-                    print(f"Request failed. Retrying ({num_retries+1}/{MAX_RETRIES})...")
-                    num_retries += 1
-                    if num_retries >= MAX_RETRIES:
-                        raise e
-                    time.sleep(randint(5, 15))
-                    continue
+        while True: 
 
+            try:
+                response = requests.get(url=self._init_url.format(**{"country": self.country, "n_page": page}), headers=self._header, timeout=randint(5,7))
+                response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
                 review_urls = soup.find_all("li", {"class": "review-item"})
 
                 for url in review_urls:
                     review_url = url.find("a", {"class": "review-listing"})["href"]
-                    self.url_list.append(review_url)
+                    urls.append(review_url)
+                
+                return urls
+
+            except (requests.exceptions.HTTPError, requests.exceptions.RequestException) as e:
+                print(f"Request failed. Retrying ({num_retries+1}/{MAX_RETRIES})...")
+                num_retries += 1
+
+                if num_retries >= MAX_RETRIES:
+                    raise e
+                
+                time.sleep(randint(5, 15))
+                continue
         
-                ###
-                print(page)
-                print(self._init_url.format(**{"country": self.country, "n_page": page}))
-                ###
-                
-                page += 1
-                
-                pbar.update(1)
+
+    @timer
+    def _get_reviews_urls(self):
+        
+        pages = range(self.first_page, self.n_pages + 1)
+        
+        with Pool() as pool:
+            results = pool.map(self._get_review_urls_on_page, pages)
+    
+
+        for url_batch in results:
+            self.url_list += url_batch
 
         output_folder =  get_project_root() / DATA_DIR 
         output_folder.mkdir(exist_ok=True)
@@ -110,6 +115,9 @@ class Scrapper:
 
 
     def _extract_review(self, url):
+
+        print(url)
+
         retries = 0
         while True:
             try:
@@ -133,49 +141,40 @@ class Scrapper:
                 # Rating
                 rating = json_data["review"]["reviewRating"]["ratingValue"]
 
+                dict1 = {
+                    "wine_name": [wine_name],
+                    "type": [wine_type],
+                    "reviewer": [reviewer_name],
+                    "review" : [review_text],
+                    "rating": [rating],
+
+                }
                 ###### Extract from html #####
 
                 # Find the place in the document ralated to the info needed
                 html_data = soup.find("ul", {"class": "primary-info"}).find_all("li", {"class": "row"})
-                # Extract price value
-                price = html_data[1].find_all("span")[1].find("span").text.split(",")[0]
-                # Extract Designation
-                designation = html_data[2].find_all("span")[1].text
-                # Extract variery (grape type)
-                grape_list = html_data[3].find_all("span")[1].text.split(",")
-                grape1 = html_data[3].find_all("span")[1].text.split(",")[0]
-                if len(grape_list) != 1:
-                    grape2 = html_data[3].find_all("span")[1].text.split(",")[1]
-                else: grape2 = None
-                # Extract winery name 
-                winery = html_data[5].find_all("span")[1].text
+                
+                dict2 = {}
+                for i in range(len(html_data)):
 
-                data = pd.DataFrame.from_dict(
-                    {
-                    "wine_name": [wine_name],
-                    "winery": [winery],
-                    "type": [wine_type],
-                    "price": [price],
-                    "designation": [designation],
-                    "variety1": [grape1],
-                    "variety2": [grape2], 
-                    "reviewer": [reviewer_name],
-                    "review" : [review_text],
-                    "rating": [rating]
+                    if html_data[i].find_all("span")[0].text == "Price":
+                        dict2[html_data[i].find_all("span")[0].text] = html_data[1].find_all("span")[1].find("span").text.split(",")[0]
+                    else:
+                        dict2[html_data[i].find_all("span")[0].text] = html_data[i].find_all("span")[1].text
 
-                }
-                )
+                data = pd.DataFrame.from_dict({**dict1,**dict2})
+
                 return data
-            except (ConnectionError, requests.exceptions.Timeout) as e:
+            except (requests.exceptions.HTTPError, requests.exceptions.RequestException) as e:
                 retries += 1
-                print(f"Connection failed, retrying ({retries}/{self.MAX_RETRIES})")
-                if retries == self.MAX_RETRIES:
+                print(f"Connection failed, retrying ({retries}/{MAX_RETRIES})")
+                if retries >= MAX_RETRIES:
                     raise e
                 time.sleep(randint(5, 15))
                 continue
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                return None
+            # except Exception as e:
+            #     print(f"Unexpected error: {e}")
+            #     return None
     
     
     @timer
@@ -186,7 +185,7 @@ class Scrapper:
         output_folder = get_project_root() / DATA_DIR 
         output_folder.mkdir(exist_ok=True)
         results = pd.concat(results, axis=0)
-        results.to_csv(output_folder / FILE_NAME_REVIEWS)
+        results.to_csv(output_folder / FILE_NAME_REVIEWS, index=False)
         print("Completed")
 
     
